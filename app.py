@@ -93,20 +93,31 @@ def limpar_numero(texto):
     if not isinstance(texto, str):
         return None
         
-    # Remove 'kg' e qualquer outro texto
-    texto = re.sub(r'[^\d.,\-]', '', texto)
+    # Remove unidades e texto, mantém números, pontos, vírgulas e sinais
+    texto = re.sub(r'[^\d.,\-\s]', '', texto)
+    texto = texto.strip()
     
     # Trata diferentes formatos de números
     try:
-        # Se tem vírgula e ponto, assume que vírgula é separador de milhares
-        if ',' in texto and '.' in texto:
+        # Formato brasileiro: 1.000,50 ou 3.324,0979121
+        if re.match(r'^\d{1,3}(\.\d{3})*,\d+$', texto):
+            texto = texto.replace('.', '').replace(',', '.')
+        # Formato americano: 1,000.50
+        elif re.match(r'^\d{1,3}(,\d{3})*\.\d+$', texto):
             texto = texto.replace(',', '')
         # Se tem só vírgula, assume que é separador decimal
-        elif ',' in texto:
+        elif ',' in texto and '.' not in texto:
             texto = texto.replace(',', '.')
+        # Se tem ponto e vírgula, mas não no formato padrão, tenta limpar
+        elif ',' in texto and '.' in texto:
+            # Remove pontos que são separadores de milhares
+            if texto.count('.') > 1 or texto.rfind(',') > texto.rfind('.'):
+                texto = texto.replace('.', '').replace(',', '.')
+            else:
+                texto = texto.replace(',', '')
             
         return float(texto)
-    except:
+    except ValueError:
         return None
 
 def verificar_unidade_basica(quantidade, unidade):
@@ -129,6 +140,92 @@ def verificar_unidade_basica(quantidade, unidade):
         return peso, f"Conversão direta: {quantidade} toneladas = {peso:.2f} kg"
         
     return None, None
+
+def extrair_resposta_ia(resposta_completa):
+    """
+    Extrai informações da resposta da IA de forma mais robusta usando regex.
+    """
+    resultado = {
+        'peso': None,
+        'memorial': '',
+        'forma_comercializacao': '',
+        'nova_densidade': ''
+    }
+    
+    # Usar regex para extrair cada campo de forma mais robusta
+    patterns = {
+        'peso': r'Peso:\s*([0-9.,]+)',
+        'memorial': r'Memorial:\s*(.+?)(?=\n(?:Forma|Nova densidade|$))',
+        'forma_comercializacao': r'Forma de comercialização:\s*(.+?)(?=\n(?:Nova densidade|$))',
+        'nova_densidade': r'Nova densidade:\s*(.+?)(?=\n|$)'
+    }
+    
+    for campo, pattern in patterns.items():
+        match = re.search(pattern, resposta_completa, re.IGNORECASE | re.DOTALL)
+        if match:
+            valor = match.group(1).strip()
+            if campo == 'peso':
+                resultado[campo] = limpar_numero(valor)
+            else:
+                resultado[campo] = valor
+    
+    return resultado
+
+def eh_unidade_tempo_ou_energia(unidade):
+    """
+    Verifica se a unidade está relacionada a tempo, energia ou serviços e deve ser ignorada.
+    """
+    if not isinstance(unidade, str):
+        return False
+    
+    unidade = unidade.lower().strip()
+    
+    # Lista de unidades de tempo para ignorar
+    unidades_tempo = [
+        # Horas
+        'h', 'hr', 'hrs', 'hora', 'horas',
+        # Dias
+        'd', 'dia', 'dias', 'day', 'days',
+        # Semanas
+        'sem', 'semana', 'semanas', 'week', 'weeks',
+        # Meses
+        'mes', 'mês', 'meses', 'month', 'months',
+        # Anos
+        'ano', 'anos', 'year', 'years',
+        # Minutos
+        'min', 'minuto', 'minutos', 'minute', 'minutes',
+        # Segundos
+        's', 'seg', 'segundo', 'segundos', 'second', 'seconds',
+        # Outras unidades temporais
+        'trimestre', 'bimestre', 'quinzena', 'década'
+    ]
+    
+    # Lista de unidades de energia/potência para ignorar
+    unidades_energia = [
+        # Energia elétrica
+        'kwh', 'kw/h', 'kw-h', 'mwh', 'wh',
+        # Potência
+        'hp', 'cv', 'kw', 'w', 'watt', 'watts',
+        # Outras unidades elétricas
+        'va', 'kva', 'var', 'kvar', 'volt', 'volts', 'amp', 'amps'
+    ]
+    
+    return unidade in unidades_tempo or unidade in unidades_energia
+
+def validar_configuracao_api():
+    """
+    Valida se a configuração da API OpenRouter está correta.
+    """
+    if not OPENROUTER_API_KEY:
+        st.error("❌ OPENROUTER_API_KEY não configurada!")
+        st.info("💡 Configure a chave da API no arquivo .env")
+        return False
+    
+    if OPENROUTER_API_KEY.startswith('sk-or-'):
+        return True
+    else:
+        st.warning("⚠️ Formato da API Key pode estar incorreto. Chaves OpenRouter geralmente começam com 'sk-or-'")
+        return True  # Permite continuar mesmo com formato diferente
 
 def calcular_peso_com_llm(descricao, quantidade, unidade):
     """
@@ -193,7 +290,7 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "google/gemini-flash-1.5-8b",
+                    "model": "openai/gpt-4o-mini",  # GPT-4o mini - mais eficiente e preciso
                     "messages": [
                         {
                             "role": "system",
@@ -222,6 +319,15 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
                 
             resposta_completa = resposta_json["choices"][0]["message"]["content"].strip()
             
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                raise Exception(f"Erro 404: Endpoint não encontrado. Verifique se a URL da API está correta: {e.response.url}")
+            elif e.response.status_code == 401:
+                raise Exception("Erro 401: API Key inválida ou expirada. Verifique sua chave OpenRouter.")
+            elif e.response.status_code == 403:
+                raise Exception("Erro 403: Acesso negado. Verifique se sua conta OpenRouter tem créditos.")
+            else:
+                raise Exception(f"Erro HTTP {e.response.status_code}: {str(e)}")
         except requests.exceptions.RequestException as e:
             raise Exception(f"Erro na chamada da API: {str(e)}")
         except json.JSONDecodeError as e:
@@ -229,56 +335,58 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
         except Exception as e:
             raise Exception(f"Erro inesperado: {str(e)}")
 
-        # Divide a resposta em peso, memorial, forma de comercialização e nova densidade
-        linhas = resposta_completa.split('\n')
-        texto_peso = linhas[0].split(':')[1].strip() if len(linhas) > 0 and ':' in linhas[0] else ""
+        # Usa a nova função de parsing mais robusta
+        resultado = extrair_resposta_ia(resposta_completa)
         
-        # Limpa e converte o peso
-        peso = limpar_numero(texto_peso)
-        if peso is None:
-            raise ValueError(f"Não foi possível converter o peso: {texto_peso}")
-        
-        # Inicializa as variáveis
-        memorial = ""
-        forma_comercializacao = ""
-        nova_densidade_texto = ""
+        peso = resultado['peso']
+        memorial = resultado['memorial']
+        forma_comercializacao = resultado['forma_comercializacao']
+        nova_densidade_texto = resultado['nova_densidade']
         nova_densidade_valor = ""
         
-        # Extrai cada parte da resposta
-        for linha in linhas[1:]:
-            if linha.startswith("Memorial:") and ':' in linha:
-                memorial = linha.split(':', 1)[1].strip()
-            elif linha.startswith("Forma de comercialização:") and ':' in linha:
-                forma_comercializacao = linha.split(':', 1)[1].strip()
-            elif linha.startswith("Nova densidade:") and ':' in linha:
-                nova_densidade_texto = linha.split(':', 1)[1].strip()
-                if nova_densidade_texto and nova_densidade_texto != "":
-                    try:
-                        # Extrai o valor numérico da densidade
-                        match = re.search(r'(\d+([.,]\d+)?)', nova_densidade_texto)
-                        if match:
-                            nova_densidade = float(match.group(1).replace(',', '.'))
-                            nova_densidade_valor = f"{nova_densidade} kg/m³"
-                            
-                            # Extrai o nome do material da descrição
-                            palavras_chave = descricao.lower().split()
-                            material_nome = palavras_chave[0] if palavras_chave else "material"
-                            for palavra in palavras_chave:
-                                if palavra in ["de", "do", "da", "para", "com", "em", "no", "na", "e", "o", "a"]:
-                                    continue
-                                material_nome = palavra
-                                break
-                            
-                            # Atualiza o glossário com a nova densidade
-                            atualizar_glossario_densidades(
-                                material_nome, 
-                                nova_densidade, 
-                                "kg/m³", 
-                                descricao
-                            )
-                            st.success(f"Nova densidade adicionada ao glossário: {material_nome} = {nova_densidade} kg/m³")
-                    except Exception as e:
-                        st.warning(f"Não foi possível processar a nova densidade: {e}")
+        # Valida se o peso foi extraído corretamente
+        if peso is None:
+            raise ValueError(f"Não foi possível extrair o peso da resposta da IA")
+        
+        # Processa nova densidade se fornecida
+        if nova_densidade_texto and nova_densidade_texto.strip() != "":
+            try:
+                # Extrai o valor numérico da densidade
+                match = re.search(r'(\d+([.,]\d+)?)', nova_densidade_texto)
+                if match:
+                    nova_densidade = float(match.group(1).replace(',', '.'))
+                    nova_densidade_valor = f"{nova_densidade} kg/m³"
+                    
+                    # Extrai o nome do material da descrição
+                    palavras_chave = descricao.lower().split()
+                    material_nome = palavras_chave[0] if palavras_chave else "material"
+                    for palavra in palavras_chave:
+                        if palavra in ["de", "do", "da", "para", "com", "em", "no", "na", "e", "o", "a"]:
+                            continue
+                        material_nome = palavra
+                        break
+                    
+                    # Verifica se o material já existe no glossário
+                    glossario_atual = carregar_glossario_densidades()
+                    material_nome_normalizado = material_nome.lower().strip()
+                    
+                    if material_nome_normalizado in glossario_atual:
+                        # Material já existe, verifica se a densidade é diferente
+                        densidade_existente = glossario_atual[material_nome_normalizado]["densidade"]
+                        if abs(densidade_existente - nova_densidade) > 0.1:  # Tolerância de 0.1 kg/m³
+                            st.info(f"ℹ️ Material '{material_nome}' já existe com densidade {densidade_existente} kg/m³. Nova densidade {nova_densidade} kg/m³ ignorada.")
+                        # Se for a mesma densidade, não faz nada (evita spam)
+                    else:
+                        # Material novo, adiciona ao glossário
+                        atualizar_glossario_densidades(
+                            material_nome, 
+                            nova_densidade, 
+                            "kg/m³", 
+                            descricao
+                        )
+                        st.success(f"✨ Nova densidade adicionada ao glossário: {material_nome} = {nova_densidade} kg/m³")
+            except Exception as e:
+                st.warning(f"Não foi possível processar a nova densidade: {e}")
 
         return peso, memorial, forma_comercializacao, nova_densidade_valor
 
@@ -286,8 +394,71 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
         st.error(f"Erro ao calcular peso: {e}")
         return None, None, None, None
 
+def detectar_estrutura_planilha(arquivo_carregado):
+    """
+    Detecta automaticamente a estrutura da planilha para encontrar as colunas corretas.
+    """
+    try:
+        # Lê as primeiras 20 linhas para análise
+        df_analise = pd.read_excel(arquivo_carregado, header=None, nrows=20)
+        
+        # Procura por palavras-chave nas células
+        descricao_col = None
+        unidade_col = None
+        quantidade_col = None
+        data_start_row = None
+        
+        for row_idx in range(len(df_analise)):
+            for col_idx in range(len(df_analise.columns)):
+                cell_value = str(df_analise.iloc[row_idx, col_idx]).lower()
+                
+                # Procura pela coluna de descrição
+                if 'descrição' in cell_value or 'descricao' in cell_value:
+                    descricao_col = col_idx
+                    data_start_row = row_idx + 1
+                
+                # Procura pela coluna de unidade
+                if 'und' in cell_value or 'unidade' in cell_value:
+                    unidade_col = col_idx
+                
+                # Procura pela coluna de quantidade
+                if 'quantidade' in cell_value:
+                    quantidade_col = col_idx
+        
+        # Se não encontrou pelos headers, usa valores padrão baseados na análise
+        if descricao_col is None:
+            descricao_col = 3  # Coluna D
+        if unidade_col is None:
+            unidade_col = 5    # Coluna F
+        if quantidade_col is None:
+            quantidade_col = 6 # Coluna G
+        if data_start_row is None:
+            data_start_row = 5 # Linha 6 (índice 5)
+        
+        return {
+            'descricao_col': descricao_col,
+            'unidade_col': unidade_col,
+            'quantidade_col': quantidade_col,
+            'data_start_row': data_start_row,
+            'columns': [descricao_col, unidade_col, quantidade_col]
+        }
+    
+    except Exception as e:
+        st.warning(f"Erro ao detectar estrutura da planilha: {e}. Usando configuração padrão.")
+        return {
+            'descricao_col': 3,
+            'unidade_col': 5,
+            'quantidade_col': 6,
+            'data_start_row': 5,
+            'columns': [3, 5, 6]
+        }
+
 def principal():
     st.title('Calculadora de Pesos de Insumos')
+    
+    # Valida configuração da API
+    if not validar_configuracao_api():
+        st.stop()
     
     # Carrega o glossário de densidades
     glossario = carregar_glossario_densidades()
@@ -327,24 +498,67 @@ def principal():
             if submitted and novo_material and nova_densidade > 0:
                 atualizar_glossario_densidades(novo_material, nova_densidade, nova_unidade, nova_descricao)
                 st.success(f"Densidade para {novo_material} adicionada com sucesso!")
-                st.experimental_rerun()
+                st.rerun()
+        
+        # Informações sobre filtros
+        st.write("### ⏰⚡ Unidades Ignoradas (Tempo/Energia)")
+        st.info("O sistema automaticamente ignora itens com unidades de tempo e energia:")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.text("🕐 Tempo:")
+            st.text("h, hrs, dia, dias, mês, ano, min, seg, semana")
+        with col2:
+            st.text("⚡ Energia:")
+            st.text("KWH, HP, KW, W, VA, KVA, CV")
     
     # Upload do arquivo
     arquivo_carregado = st.file_uploader("Escolha uma planilha de insumos", type=['xlsx', 'xls'])
     
     if arquivo_carregado is not None:
         try:
-            # Lê o arquivo Excel começando da linha 6 (índice 5)
+            # Detecta a estrutura da planilha
+            estrutura = detectar_estrutura_planilha(arquivo_carregado)
+            
+            st.info(f"📊 Estrutura detectada: Descrição=Col {chr(65+estrutura['descricao_col'])}, Unidade=Col {chr(65+estrutura['unidade_col'])}, Quantidade=Col {chr(65+estrutura['quantidade_col'])}, Dados a partir da linha {estrutura['data_start_row']+1}")
+            
+            # Lê o arquivo Excel com a estrutura detectada
             df = pd.read_excel(
                 arquivo_carregado,
-                skiprows=5,  # Pula as primeiras 5 linhas
-                usecols=[2, 4, 5],  # Usa colunas D (índice 3), F (5) e G (6)
+                skiprows=estrutura['data_start_row'],  # Pula as linhas de cabeçalho
+                usecols=estrutura['columns'],  # Usa as colunas detectadas
                 names=['Descrição', 'Unidade', 'Quantidade'],  # Renomeia colunas
                 decimal=','  # Especifica que vírgula é o separador decimal no Excel
             )
             
             # Remove linhas completamente vazias
             df = df.dropna(how='all')
+            
+            # Mostra estatísticas das unidades
+            st.info(f"📊 Total de itens carregados: {len(df)}")
+            
+            # Filtra unidades de tempo e energia ANTES de processar
+            unidades_filtradas = df[df['Unidade'].apply(eh_unidade_tempo_ou_energia)]
+            
+            if not unidades_filtradas.empty:
+                st.warning(f"⏰⚡ Ignorando {len(unidades_filtradas)} itens com unidades de tempo/energia:")
+                with st.expander("Ver itens ignorados"):
+                    for _, linha in unidades_filtradas.iterrows():
+                        st.text(f"  • {linha['Descrição'][:60]}... ({linha['Unidade']})")
+            
+            # Remove itens com unidades de tempo e energia
+            df_original_count = len(df)
+            df = df[~df['Unidade'].apply(eh_unidade_tempo_ou_energia)]
+            
+            if df.empty:
+                st.error("❌ Nenhum item válido encontrado após filtrar unidades de tempo/energia!")
+                return
+            
+            # Mostra resultado do filtro
+            itens_removidos = df_original_count - len(df)
+            if itens_removidos > 0:
+                st.success(f"✅ Processando {len(df)} itens (removidos {itens_removidos} itens de tempo/energia)")
+            else:
+                st.success(f"✅ Processando {len(df)} itens (nenhuma unidade de tempo/energia encontrada)")
             
             # Converte a coluna Quantidade para número, tratando diferentes formatos
             df['Quantidade'] = df['Quantidade'].apply(limpar_numero)
@@ -367,37 +581,92 @@ def principal():
             df['Nova Densidade'] = None
             
             # Calcula pesos
+            total_itens = len(df)
+            contador_processados = 0
+            
             for indice, linha in df.iterrows():
                 descricao = linha['Descrição']
                 quantidade = linha['Quantidade']
                 unidade = linha['Unidade']
                 
                 if pd.notna(descricao) and pd.notna(quantidade) and pd.notna(unidade):
-                    # Calcula peso
-                    peso, memorial, forma_comercializacao, nova_densidade = calcular_peso_com_llm(descricao, quantidade, unidade)
-                    
-                    # Atualiza dataframe
-                    df.at[indice, 'Peso (kg)'] = peso
-                    df.at[indice, 'Memorial'] = memorial
-                    df.at[indice, 'Forma de Comercialização'] = forma_comercializacao
-                    df.at[indice, 'Nova Densidade'] = nova_densidade
+                    try:
+                        # Calcula peso
+                        peso, memorial, forma_comercializacao, nova_densidade = calcular_peso_com_llm(descricao, quantidade, unidade)
+                        
+                        # Atualiza dataframe
+                        df.at[indice, 'Peso (kg)'] = peso
+                        df.at[indice, 'Memorial'] = memorial
+                        df.at[indice, 'Forma de Comercialização'] = forma_comercializacao
+                        df.at[indice, 'Nova Densidade'] = nova_densidade
+                        
+                        st.success(f"✅ Processado: {descricao[:50]}...")
+                        
+                    except Exception as e:
+                        st.error(f"❌ Erro ao processar '{descricao[:50]}...': {e}")
+                        # Continua processando os outros itens
                 
-                # Atualiza progresso
-                barra_progresso.progress((indice + 1) / len(df))
+                # Atualiza progresso corretamente
+                contador_processados += 1
+                progresso = min(contador_processados / total_itens, 1.0)  # Garante que não passe de 1.0
+                barra_progresso.progress(progresso)
+                
+                # Salvamento automático a cada 10 itens
+                if contador_processados % 10 == 0:
+                    try:
+                        csv_backup = df.to_csv(index=False, decimal='.')
+                        st.info(f"💾 Backup automático: {contador_processados}/{total_itens} itens processados")
+                    except Exception as e:
+                        st.warning(f"Erro no backup: {e}")
+            
+            # Finaliza barra de progresso
+            barra_progresso.progress(1.0)
             
             # Exibe dataframe atualizado
             st.subheader('Planilha com Pesos Calculados')
             st.dataframe(df)
             
-            # Opção de download
-            # Configura o formato CSV para usar ponto como separador decimal
-            csv = df.to_csv(index=False, decimal='.')
-            st.download_button(
-                label="Baixar Planilha Atualizada",
-                data=csv,
-                file_name='insumos_com_pesos.csv',
-                mime='text/csv'
-            )
+            # Opção de download sempre disponível
+            try:
+                csv = df.to_csv(index=False, decimal='.')
+                
+                # Estatísticas do processamento
+                itens_processados = df['Peso (kg)'].notna().sum()
+                st.info(f"📊 Processamento concluído: {itens_processados}/{len(df)} itens calculados")
+                
+                # Botão de download principal
+                st.download_button(
+                    label="📥 Baixar Planilha Completa (CSV)",
+                    data=csv,
+                    file_name=f'insumos_com_pesos_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.csv',
+                    mime='text/csv',
+                    type="primary"
+                )
+                
+                # Botão de download apenas dos itens processados
+                df_processados = df[df['Peso (kg)'].notna()]
+                if len(df_processados) > 0:
+                    csv_processados = df_processados.to_csv(index=False, decimal='.')
+                    st.download_button(
+                        label="📥 Baixar Apenas Itens Calculados (CSV)",
+                        data=csv_processados,
+                        file_name=f'insumos_calculados_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.csv',
+                        mime='text/csv'
+                    )
+                
+            except Exception as e:
+                st.error(f"Erro ao preparar download: {e}")
+                # Download de emergência
+                try:
+                    csv_emergencia = df.to_csv(index=False)
+                    st.download_button(
+                        label="🚨 Download de Emergência",
+                        data=csv_emergencia,
+                        file_name='backup_emergencia.csv',
+                        mime='text/csv'
+                    )
+                except:
+                    st.error("Não foi possível criar arquivo de backup")
             
             # Recarrega o glossário para mostrar as novas densidades adicionadas
             glossario_atualizado = carregar_glossario_densidades()
@@ -492,6 +761,31 @@ def principal():
         
         except Exception as e:
             st.error(f"Erro ao processar planilha: {e}")
+            
+            # Tenta salvar o que foi processado até agora
+            try:
+                if 'df' in locals() and not df.empty:
+                    st.warning("🚨 Tentando salvar dados processados até o momento do erro...")
+                    
+                    # Conta itens processados
+                    if 'Peso (kg)' in df.columns:
+                        itens_salvos = df['Peso (kg)'].notna().sum()
+                        st.info(f"📊 Itens processados antes do erro: {itens_salvos}/{len(df)}")
+                    
+                    # Download de emergência
+                    csv_emergencia = df.to_csv(index=False, decimal='.')
+                    st.download_button(
+                        label="🚨 Baixar Dados Parciais (Emergência)",
+                        data=csv_emergencia,
+                        file_name=f'backup_parcial_{pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")}.csv',
+                        mime='text/csv',
+                        type="secondary"
+                    )
+                    
+                    st.success("✅ Backup de emergência disponível para download!")
+                    
+            except Exception as backup_error:
+                st.error(f"Não foi possível criar backup de emergência: {backup_error}")
 
 if __name__ == "__main__":
     principal()

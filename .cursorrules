@@ -1,0 +1,53 @@
+# Cursor Rules para Calcula Pesos App
+
+## Ambiente Virtual Python
+- SEMPRE ative o ambiente virtual .venv antes de executar comandos Python
+- Se .venv não existir, crie automaticamente com: `python -m venv .venv`
+- Comandos Python devem SEMPRE ser precedidos por: `source .venv/bin/activate &&`
+- Exemplo correto: `source .venv/bin/activate && python -c "import pandas"`
+
+## Estrutura do Projeto
+- Este é um projeto Streamlit para cálculo de pesos de materiais
+- Arquivo principal: app.py
+- Dependências em: requirements.txt
+- Dados persistidos em: densidades.pkl
+
+## Comandos Padrão
+### Instalação de dependências:
+```bash
+source .venv/bin/activate && pip install -r requirements.txt
+```
+
+### Executar aplicação:
+```bash
+source .venv/bin/activate && streamlit run app.py
+```
+
+### Análise de dados:
+```bash
+source .venv/bin/activate && python -c "seu_codigo_aqui"
+```
+
+## Boas Práticas
+- Sempre verificar se as dependências estão instaladas antes de executar código
+- Usar caminhos absolutos quando necessário
+- Tratar erros de importação adequadamente
+- Manter o ambiente virtual sempre ativado durante desenvolvimento
+
+## Dependências Principais
+- streamlit
+- pandas
+- requests
+- python-dotenv
+- openpyxl
+
+## Configuração de Ambiente
+- Arquivo .env deve conter OPENROUTER_API_KEY
+- Usar variáveis de ambiente para configurações sensíveis
+- Logs e erros devem ser tratados adequadamente
+
+## Análise de Planilhas Excel
+- Planilhas podem ter estruturas variadas
+- Sempre analisar header e primeiras linhas antes de processar
+- Tratar diferentes formatos de dados (vírgula vs ponto decimal)
+- Validar colunas antes de usar índices fixos
