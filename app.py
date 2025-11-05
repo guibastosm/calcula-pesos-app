@@ -233,8 +233,11 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
     Primeiro verifica se é possível fazer conversão direta de unidades básicas.
     """
     try:
+        # Arredonda quantidade para 2 casas decimais para evitar confundir a IA
+        quantidade_arredondada = round(float(quantidade), 2)
+        
         # Primeiro tenta converter unidades básicas
-        peso, memorial = verificar_unidade_basica(quantidade, unidade)
+        peso, memorial = verificar_unidade_basica(quantidade_arredondada, unidade)
         if peso is not None:
             return peso, memorial, "", ""
 
@@ -250,12 +253,17 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
         prompt = f"""
         Calcule o peso em kg para o seguinte insumo:
         - Descrição: {descricao}
-        - Quantidade: {quantidade}
+        - Quantidade: {quantidade_arredondada}
         - Unidade de Medida: {unidade}
 
-        Pense de maneira passo a passo.
+        Pense de maneira passo a passo e seja PRECISO nos cálculos matemáticos.
         
-        IMPORTANTE: Utilize SEMPRE as densidades conhecidas abaixo quando aplicável. Caso o material não esteja na lista, use uma densidade padrão baseada em materiais similares e INDIQUE CLARAMENTE que está usando uma estimativa.
+        IMPORTANTE: 
+        1. Utilize SEMPRE as densidades conhecidas abaixo quando aplicável
+        2. Faça cálculos matemáticos EXATOS: densidade × quantidade = peso
+        3. NUNCA converta o resultado para toneladas - mantenha SEMPRE em kg
+        4. Para grandes quantidades (ex: 1500 × 484.53 = 726795 kg), NÃO arredonde para milhares
+        5. Caso o material não esteja na lista, use uma densidade padrão baseada em materiais similares e INDIQUE CLARAMENTE que está usando uma estimativa
         
         DENSIDADES CONHECIDAS:
         {materiais_conhecidos}
@@ -267,16 +275,16 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
         Nova densidade: [se você usou uma densidade que não está na lista acima, forneça o valor aqui no formato número kg/m³, caso contrário deixe em branco]
 
         Exemplo de resposta correta:
-        Peso: 5 kg
-        Memorial: Para madeira compensada, considerando densidade média de 0.5 kg/dm³ e uma quantidade de 10 dm³ e a unidade de dm³, o peso total é 0.5 (kg/dm3) * 10 (dm³) = 5 kg. O resultado SEMPRE será em kg.
+        Peso: 5.00
+        Memorial: Para madeira compensada, considerando densidade média de 0.5 kg/dm³ e uma quantidade de 10 dm³ e a unidade de dm³, o peso total é 0.5 × 10 = 5.00 kg. O resultado SEMPRE será em kg.
         Forma de comercialização: Usualmente comercializado em placas 1m x 1m.
         Nova densidade: 
         
-        Outro exemplo com nova densidade:
-        Peso: 850 kg
-        Memorial: Para o saco de cimento, considerando densidade média de 42,5 kg/saco e uma quantidade de 20 sacos e a unidade em saco, o peso total é 42.5 (kg/saco) * 20 (saco) = 850 kg. O resultado SEMPRE será em kg.
-        Forma de comercialização: Usualmente comercializado em sacos de 42,5 kg.
-        Nova densidade: 1400 kg/m³
+        Exemplo com grandes quantidades:
+        Peso: 726795.00
+        Memorial: Para brita, considerando densidade de 1500 kg/m³ e uma quantidade de 484.53 m³, o peso total é 1500 × 484.53 = 726795.00 kg. NUNCA divida por 1000 ou converta para toneladas. O resultado SEMPRE será em kg.
+        Forma de comercialização: Usualmente comercializado em metros cúbicos.
+        Nova densidade:
         """
 
         # Chama API Open Router
