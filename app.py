@@ -233,8 +233,11 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
     Primeiro verifica se é possível fazer conversão direta de unidades básicas.
     """
     try:
-        # Arredonda quantidade para 2 casas decimais para evitar confundir a IA
-        quantidade_arredondada = round(float(quantidade), 2)
+        # Limpa e converte quantidade para float, depois arredonda para 2 casas decimais
+        quantidade_limpa = limpar_numero(quantidade)
+        if quantidade_limpa is None:
+            raise ValueError(f"Não foi possível converter a quantidade: {quantidade}")
+        quantidade_arredondada = round(quantidade_limpa, 2)
         
         # Primeiro tenta converter unidades básicas
         peso, memorial = verificar_unidade_basica(quantidade_arredondada, unidade)
@@ -260,10 +263,12 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
         
         IMPORTANTE: 
         1. Utilize SEMPRE as densidades conhecidas abaixo quando aplicável
-        2. Faça cálculos matemáticos EXATOS: densidade × quantidade = peso
-        3. NUNCA converta o resultado para toneladas - mantenha SEMPRE em kg
-        4. Para grandes quantidades (ex: 1500 × 484.53 = 726795 kg), NÃO arredonde para milhares
-        5. Caso o material não esteja na lista, use uma densidade padrão baseada em materiais similares e INDIQUE CLARAMENTE que está usando uma estimativa
+        2. Para unidade "un" (unidade): ANALISE a descrição para estimar peso individual realista
+        3. Faça cálculos matemáticos EXATOS: peso_individual × quantidade = peso_total
+        4. NUNCA converta o resultado para toneladas - mantenha SEMPRE em kg
+        5. Para grandes quantidades (ex: 1500 × 484.53 = 726795 kg), NÃO arredonde para milhares
+        6. Para TUBOS: use a fórmula Volume = 2×π×(Diâmetro/2)×Espessura×Altura para calcular o volume de material
+        7. Caso o material não esteja na lista, use uma densidade padrão baseada em materiais similares e INDIQUE CLARAMENTE que está usando uma estimativa
         
         DENSIDADES CONHECIDAS:
         {materiais_conhecidos}
@@ -285,6 +290,12 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
         Memorial: Para brita, considerando densidade de 1500 kg/m³ e uma quantidade de 484.53 m³, o peso total é 1500 × 484.53 = 726795.00 kg. NUNCA divida por 1000 ou converta para toneladas. O resultado SEMPRE será em kg.
         Forma de comercialização: Usualmente comercializado em metros cúbicos.
         Nova densidade:
+        
+        Exemplo para tubos:
+        Peso: 157.08
+        Memorial: Para tubo de aço com diâmetro 33.7mm, espessura 2.25mm e altura 6000mm: Volume = 2×π×(33.7/2)×2.25×6000 = 0.02 m³. Com densidade do aço 7850 kg/m³: 7850 × 0.02 = 157.08 kg.
+        Forma de comercialização: Usualmente comercializado por metro linear.
+        Nova densidade:
         """
 
         # Chama API Open Router
@@ -298,7 +309,7 @@ def calcular_peso_com_llm(descricao, quantidade, unidade):
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "openai/gpt-4o-mini",  # GPT-4o mini - mais eficiente e preciso
+                    "model": "x-ai/grok-4-fast",  # Grok-4-Fast - modelo mais avançado
                     "messages": [
                         {
                             "role": "system",
@@ -553,20 +564,19 @@ def principal():
                     for _, linha in unidades_filtradas.iterrows():
                         st.text(f"  • {linha['Descrição'][:60]}... ({linha['Unidade']})")
             
-            # Remove itens com unidades de tempo e energia
-            df_original_count = len(df)
-            df = df[~df['Unidade'].apply(eh_unidade_tempo_ou_energia)]
+            # Separa itens para processamento (sem remover da planilha final)
+            df_para_processar = df[~df['Unidade'].apply(eh_unidade_tempo_ou_energia)]
+            df_ignorados = df[df['Unidade'].apply(eh_unidade_tempo_ou_energia)]
             
-            if df.empty:
-                st.error("❌ Nenhum item válido encontrado após filtrar unidades de tempo/energia!")
+            if df_para_processar.empty:
+                st.error("❌ Nenhum item válido encontrado para cálculo de peso!")
                 return
             
             # Mostra resultado do filtro
-            itens_removidos = df_original_count - len(df)
-            if itens_removidos > 0:
-                st.success(f"✅ Processando {len(df)} itens (removidos {itens_removidos} itens de tempo/energia)")
+            if len(df_ignorados) > 0:
+                st.success(f"✅ Processando {len(df_para_processar)} itens ({len(df_ignorados)} itens de tempo/energia serão mantidos na planilha sem cálculo)")
             else:
-                st.success(f"✅ Processando {len(df)} itens (nenhuma unidade de tempo/energia encontrada)")
+                st.success(f"✅ Processando {len(df_para_processar)} itens (nenhuma unidade de tempo/energia encontrada)")
             
             # Converte a coluna Quantidade para número, tratando diferentes formatos
             df['Quantidade'] = df['Quantidade'].apply(limpar_numero)
@@ -588,11 +598,18 @@ def principal():
             df['Forma de Comercialização'] = None
             df['Nova Densidade'] = None
             
-            # Calcula pesos
-            total_itens = len(df)
+            # Calcula pesos apenas para itens válidos
+            total_itens = len(df_para_processar)
             contador_processados = 0
             
-            for indice, linha in df.iterrows():
+            # Preenche itens ignorados com informações explicativas
+            for indice in df_ignorados.index:
+                df.at[indice, 'Peso (kg)'] = "N/A (Serviço/Tempo)"
+                df.at[indice, 'Memorial'] = f"Item ignorado: unidade '{df.at[indice, 'Unidade']}' refere-se a tempo/energia, não a material físico"
+                df.at[indice, 'Forma de Comercialização'] = "Serviço"
+                df.at[indice, 'Nova Densidade'] = ""
+            
+            for indice, linha in df_para_processar.iterrows():
                 descricao = linha['Descrição']
                 quantidade = linha['Quantidade']
                 unidade = linha['Unidade']
